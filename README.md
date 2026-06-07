@@ -1,5 +1,4 @@
 # Vision-OCR-Optical-Character-Recognition-ONNX
-OCR + ONNX Runtime
 
 ### 功能 Features  
 1. **支持的模型 Supported Models**:
