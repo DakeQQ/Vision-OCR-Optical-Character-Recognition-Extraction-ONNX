@@ -9,9 +9,9 @@ OCR + ONNX Runtime
 ---
 
 ### 性能 Performance  
-| OS           | Device       | Backend           | Model                  | Tokens per Second |
-|:------------:|:------------:|:-----------------:|:----------------------:|:-----------------:|
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LightOnOCR-2<br>Q8F32 |        24         |
+| OS           | Device       | Backend           | Model                     | Tokens per Second |
+|:------------:|:------------:|:-----------------:|:-------------------------:|:-----------------:|
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LightOnOCR-2-1B<br>Q8F32 |        24         |
 
 
 ---
