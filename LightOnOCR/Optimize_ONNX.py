@@ -35,7 +35,7 @@ upgrade_opset    = 0                     # Optional opset upgrade. Set 0 to disa
 # Model List
 # ==============================================================================
 model_names = [                                             # Recommended dtype:
-    "LLM_Embed",                                            # [int4, int8, float32, float16]
+    "LLM_Embed",                                            # [int4, float32, float16]
     "LLM_Vision",                                           # [int8, float32, float16]
     "LLM_Main",                                             # [int8, float32, float16]
     "Rotary_Prefill",                                       # [float32, float16]
