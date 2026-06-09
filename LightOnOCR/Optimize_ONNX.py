@@ -164,8 +164,8 @@ def process_single_model(
 ):
     """Process a single ONNX file: quantize / optimize / slim."""
     be_optimized = False
-
-    if not lazy_setting_CPU and not lazy_setting_GPU:
+    
+    if lazy_setting_CPU or lazy_setting_GPU:
         if quant_int4_flag:
             bits = 4
             block_size = 16
