@@ -418,7 +418,9 @@ pixel_values = load_images(TEST_IMAGE, INPUT_IMAGE_SIZE[0], INPUT_IMAGE_SIZE[1])
 pixel_values_ort = create_ort_from_numpy(pixel_values, device_type, DEVICE_ID)
 binding_Vision.bind_ortvalue_input(in_name_Vision[0], pixel_values_ort)
 bind_ort_out(binding_Vision, out_name_Vision, _ort_device_type)
+vision_start_time = time.time()
 run(ort_session_Vision, binding_Vision)
+vision_elapsed = time.time() - vision_start_time
 vision_outputs = binding_Vision.get_outputs()
 concat_hidden_states = vision_outputs[deepstack_features_len].numpy().astype(hidden_dtype_Main, copy=False)
 del pixel_values, pixel_values_ort
@@ -740,6 +742,7 @@ print(
     f"{'─' * 56}\n"
     f"  {'Phase':<12} {'Speed':>14} {'Tokens':>8} {'Time':>10}\n"
     f"  {'─' * 48}\n"
+    f"  {'Vision':<12} {'—':>14} {'—':>8} {vision_elapsed:>8.3f}s\n"
     f"  {'Prefill':<12} {prefill_tokens_per_second:>10.2f} t/s {num_prefill:>8d} {prefill_elapsed:>8.3f}s\n"
     f"  {'Decode':<12} {decode_tokens_per_second:>10.2f} t/s {num_decode:>8d} {decode_elapsed:>8.3f}s\n"
     f"  {'─' * 48}\n"
