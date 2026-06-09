@@ -19,4 +19,5 @@
 - [ ] [FireRedOCR](https://modelscope.cn/models/FireRedTeam/FireRed-OCR)
 - [ ] [PaddleOCR-VL](https://modelscope.cn/models/PaddlePaddle/PaddleOCR-VL-1.6)
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
+- [ ] [Surya-OCR-2](https://huggingface.co/datalab-to/surya-ocr-2)
 ---
