@@ -60,6 +60,7 @@ IMAGE_RESIZE                     = [HEIGHT_FACTOR * 32, WIDTH_FACTOR * 32]      
 INPUT_IMAGE_SIZE                 = [640, 640]                                             # Export-time OCR canvas before patch packing.
 VISION_BATCH_SIZE                = 1                                                      # Number of pages/images processed per batch.
 DYNAMIC_IMAGE_SHAPE              = False                                                  # Allow dynamic number of image inputs. (Experimental, may cause errors)
+INPUT_IMAGE_DIM                  = 4                                                      # 4 for [batch, 3, height, width]; 5 for [batch, 1, 3, height, width]
 
 # ── KV Cache Quantization ─────────────────────────────────────────────────────
 KV_QUANT_DTYPE                   = "F16"                                                  # KV dtype: "ROTARY_Q4" | "ROTARY_Q4_CUDA" | "Q8" | "Q8_CUDA" | "ROTARY_Q8" | "ROTARY_Q8_CUDA" | "F16" | "F32"
@@ -2445,11 +2446,18 @@ if DO_EXPORT:
         gc.collect()
 
         # ── Export fused LLM_Vision (preprocess + encode + concat) ──
-        pixel_values_img = torch.randint(
-            0, 255,
-            size=(VISION_BATCH_SIZE, 1, 3, INPUT_IMAGE_SIZE[0], INPUT_IMAGE_SIZE[1]),
-            dtype=torch.uint8,
-        )
+        if INPUT_IMAGE_DIM == 5:
+            pixel_values_img = torch.randint(
+                0, 255,
+                size=(VISION_BATCH_SIZE, 1, 3, INPUT_IMAGE_SIZE[0], INPUT_IMAGE_SIZE[1]),
+                dtype=torch.uint8,
+            )
+        else:
+            pixel_values_img = torch.randint(
+                0, 255,
+                size=(VISION_BATCH_SIZE, 3, INPUT_IMAGE_SIZE[0], INPUT_IMAGE_SIZE[1]),
+                dtype=torch.uint8,
+            )
         text_hidden_states = torch.ones((1, ids_len_dummy, HIDDEN_SIZE), dtype=torch.float32)
         vision_model = LLM_VISION(
             model, HEIGHT_FACTOR, WIDTH_FACTOR, VISION_BATCH_SIZE,
@@ -2462,7 +2470,10 @@ if DO_EXPORT:
             input_names=["pixel_values", "text_hidden_states"],
             output_names=["concat_hidden_states"],
             dynamic_axes={
-                "pixel_values": {0: "num_images"} if DYNAMIC_IMAGE_SHAPE else {},
+                "pixel_values": (
+                    {0: "num_images", 3: "image_h", 4: "image_w"} if INPUT_IMAGE_DIM == 5
+                    else {0: "num_images", 2: "image_h", 3: "image_w"}
+                ) if DYNAMIC_IMAGE_SHAPE else {},
                 "text_hidden_states": {1: "ids_len"},
                 "concat_hidden_states": {1: "total_len"},
             },
@@ -2681,6 +2692,7 @@ if DO_EXPORT:
 
     print("Export done. Starting ORT runtime.")
 
+
 # ORT Runtime Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 def bind_ort_in_buf(binding, names, values):
@@ -2881,8 +2893,6 @@ _ort_device_type = C.OrtDevice(
 )
 kv_device = "cpu" if device_type == "dml" else device_type
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════════
 # Load ONNX Sessions
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3190,7 +3200,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
     binding_Rotary_Prefill = ort_session_Rotary_Prefill.io_binding()
     binding_Rotary_Decode = ort_session_Rotary_Decode.io_binding()
 
-
     # ══════════════════════════════════════════════════════════════════════════════
     # Decode head sessions
     # ══════════════════════════════════════════════════════════════════════════════
@@ -3237,7 +3246,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         out_name_Argmax    = get_out_names(ort_session_Argmax)[0]
         save_id_list       = []
 
-
     # ══════════════════════════════════════════════════════════════════════════════
     # Penalty session
     # ══════════════════════════════════════════════════════════════════════════════
@@ -3254,7 +3262,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         penalty_value = create_ort_with_data([REPEAT_PENALTY], penalty_dtype, device_type, DEVICE_ID)
         penalty_range_ort = create_ort_with_data([PENALTY_RANGE], np.int64, device_type, DEVICE_ID)
         bind_ort_in_buf(binding_Penalty, in_name_Penalty[2:], [penalty_value, penalty_range_ort])
-
 
     # ══════════════════════════════════════════════════════════════════════════════
     # Prefill phase
@@ -3337,7 +3344,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
     else:
         binding_Argmax.bind_ortvalue_input(in_name_Argmax, prefill_logits_buf)
         binding_Argmax.bind_ortvalue_output(out_name_Argmax, max_idx_buf)
-
 
     # ══════════════════════════════════════════════════════════════════════════════
     # Decode loop
@@ -3438,7 +3444,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         run(ort_session_Rotary_Decode, binding_Rotary_Decode)
         num_decode += 1
 
-
     # ══════════════════════════════════════════════════════════════════════════════
     # Results
     # ══════════════════════════════════════════════════════════════════════════════
@@ -3455,7 +3460,6 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
     prefill_tokens_per_second = num_prefill / prefill_elapsed if prefill_elapsed > 0 else 0.0
     decode_tokens_per_second = num_decode / decode_elapsed if decode_elapsed > 0 else 0.0
     overall_tokens_per_second = (num_decode + 1) / total_elapsed if total_elapsed > 0 else 0.0
-
 
     if USE_PENALTY or USE_BEAM_SEARCH:
         result = (
@@ -3490,4 +3494,3 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         f"  {'Overall':<12} {overall_tokens_per_second:>10.2f} t/s {num_decode + 1:>8d} {total_elapsed:>8.3f}s\n"
         f"{chr(9472) * 60}\n"
     )
-    
