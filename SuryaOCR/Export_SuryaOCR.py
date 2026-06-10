@@ -3385,7 +3385,7 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
                 run(ort_session_Second_Beam, binding_Second_Beam)
                 outputs_Beam = binding_Second_Beam.get_outputs()
 
-            max_logits_idx = int(max_idx_buf.numpy().flat[0])
+            max_logits_idx = max_idx_buf.numpy().flat[0]
             if max_logits_idx in STOP_TOKEN_SET:
                 break
 
@@ -3401,7 +3401,7 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
             else:
                 run(ort_session_Argmax, binding_Argmax)
 
-            max_logits_idx = int(max_idx_buf.numpy().flat[0])
+            max_logits_idx = max_idx_buf.numpy().flat[0]
             if max_logits_idx in STOP_TOKEN_SET:
                 break
 
