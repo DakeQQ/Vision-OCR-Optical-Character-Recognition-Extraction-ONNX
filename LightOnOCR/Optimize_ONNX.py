@@ -135,7 +135,7 @@ def _num_heads(name):
     if name == "LLM_Main":
         return 16
     elif name == "LLM_Vision":
-        return 12
+        return 16
     return 0
 
 
@@ -143,7 +143,7 @@ def _hidden_size(name):
     if name == "LLM_Main":
         return 1024
     elif name == "LLM_Vision":
-        return 768
+        return 1024
     return 0
 
 
