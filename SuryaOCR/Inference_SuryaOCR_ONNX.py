@@ -883,7 +883,7 @@ def main():
 					run(ort_session_Second_Beam, binding_Second_Beam)
 					outputs_Beam = binding_Second_Beam.get_outputs()
 
-				max_logits_idx = int(max_idx_buf.numpy().flat[0])
+				max_logits_idx = max_idx_buf.numpy().flat[0]
 				if max_logits_idx in stop_token_set:
 					break
 
@@ -902,7 +902,7 @@ def main():
 				else:
 					run(ort_session_Argmax, binding_Argmax)
 
-				max_logits_idx = int(max_idx_buf.numpy().flat[0])
+				max_logits_idx = max_idx_buf.numpy().flat[0]
 				if max_logits_idx in stop_token_set:
 					break
 
