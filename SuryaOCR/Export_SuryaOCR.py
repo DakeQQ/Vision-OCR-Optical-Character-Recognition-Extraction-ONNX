@@ -1319,8 +1319,6 @@ class LLM_VISION(torch.nn.Module):
         return x.view(2, batch_size, self.num_heads, -1, self.head_dim)
 
     def forward(self, pixel_values, text_hidden_states):
-
-
         # ── 1. Preprocess: pixel_values → patches ────────────────────────
         if pixel_values.dim() == 5:
             pixel_values = pixel_values.squeeze(1)
