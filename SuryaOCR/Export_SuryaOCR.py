@@ -51,7 +51,7 @@ GENERATION_CONFIG                = json.loads((Path(download_path) / "generation
 DO_EXPORT                        = True                                                   # Whether to export the ONNX models.
 PREVENT_F16_OVERFLOW             = False                                                  # Prevent float16 overflow. Set True for Q4F16 or Q8F16 or F16 quantization.
 STOP_TOKEN                       = [2]                                                    # EOS token ID from generation_config.
-MAX_SEQ_LEN                      = 4096                                                   # Max output sequence length; keep fixed after export.
+MAX_SEQ_LEN                      = 8192                                                   # Max output sequence length; keep fixed after export.
 
 # ── Image Vision Config ───────────────────────────────────────────────────────
 HEIGHT_FACTOR                    = 20                                                     # Vertical patch-grid multiplier (grid_h = HEIGHT_FACTOR * merge_size).
@@ -2727,6 +2727,13 @@ def create_ort_with_shape(shape, dtype, device, device_id):
     )
 
 
+def create_ort_from_numpy(array, device, device_id):
+    """Create an OrtValue from an existing numpy array."""
+    return onnxruntime.OrtValue.ortvalue_from_numpy(
+        np.ascontiguousarray(array), device, device_id
+    )
+
+
 def create_session(
     model_path, _session_opts, _providers, _provider_options, _disabled_optimizers
 ):
@@ -2781,6 +2788,39 @@ def create_ort_with_meta_shape(
             shape[idx] = 1
 
     return create_ort_with_shape(tuple(shape), dtype, device, device_id)
+
+
+def load_images(image_paths, target_h, target_w, batch_size, dynamic_shape, input_dim=5):
+    """Load and batch images for inference."""
+    if not image_paths:
+        raise ValueError("TEST_IMAGE must contain at least one valid image path.")
+    images = [load_image_letterbox(path, target_h, target_w) for path in image_paths]
+    if not dynamic_shape:
+        blank_image = np.full((3, target_h, target_w), 128, dtype=np.uint8)
+        while len(images) < batch_size:
+            images.append(blank_image)
+    pixel_values = np.stack(images, axis=0)
+    if input_dim == 5:
+        pixel_values = np.expand_dims(pixel_values, axis=1)
+    return np.ascontiguousarray(pixel_values)
+
+
+def print_performance(task_index, task_label, num_prefill, num_decode,
+                      prefill_elapsed, decode_elapsed, total_elapsed):
+    """Print performance summary for a task."""
+    prefill_tps = num_prefill / prefill_elapsed if prefill_elapsed > 0 else 0.0
+    decode_tps = num_decode / decode_elapsed if decode_elapsed > 0 else 0.0
+    overall_tps = (num_decode + 1) / total_elapsed if total_elapsed > 0 else 0.0
+    print(f"\n{'─' * 60}")
+    print(f"  Performance Summary - Task {task_index}: {task_label}")
+    print(f"{'─' * 60}")
+    print(f"  {'Phase':<12} {'Speed':>14} {'Tokens':>8} {'Time':>10}")
+    print(f"  {'─' * 52}")
+    print(f"  {'Prefill':<12} {prefill_tps:>10.2f} t/s {num_prefill:>8d} {prefill_elapsed:>8.3f}s")
+    print(f"  {'Decode':<12} {decode_tps:>10.2f} t/s {num_decode:>8d} {decode_elapsed:>8.3f}s")
+    print(f"  {'─' * 52}")
+    print(f"  {'Overall':<12} {overall_tps:>10.2f} t/s {num_decode + 1:>8d} {total_elapsed:>8.3f}s")
+    print(f"{'─' * 60}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2898,51 +2938,42 @@ kv_device = "cpu" if device_type == "dml" else device_type
 # ══════════════════════════════════════════════════════════════════════════════
 # --- Embed ---
 ort_session_Embed = create_session(onnx_model_Embed, **packed_settings)
-binding_Embed     = ort_session_Embed.io_binding()
 in_name_Embed     = get_in_names(ort_session_Embed)[0]
 out_name_Embed    = get_out_names(ort_session_Embed)[0]
 
 # --- Vision (fused: preprocess + encode + concat) ---
 ort_session_Vision = create_session(onnx_model_Vision, **packed_settings)
-binding_Vision     = ort_session_Vision.io_binding()
 in_name_Vision     = get_in_names(ort_session_Vision)
 out_name_Vision    = get_out_names(ort_session_Vision)[0]
 
 # Read vision config from exported ONNX model metadata
-_vision_in_meta = ort_session_Vision._inputs_meta[0]
-vision_batch_size = _vision_in_meta.shape[0]
+vision_input_meta = ort_session_Vision._inputs_meta[0]
+vision_meta_shape = vision_input_meta.shape
+vision_batch_meta = vision_meta_shape[0]
+dynamic_image_shape = not isinstance(vision_batch_meta, int)
+vision_batch_size = vision_batch_meta if isinstance(vision_batch_meta, int) else VISION_BATCH_SIZE
 vision_embed_size = VISION_EMBED_SIZE
 
-_img_meta_shape = _vision_in_meta.shape
-if len(_img_meta_shape) == 5:
-    _img_h, _img_w = _img_meta_shape[3], _img_meta_shape[4]
+if len(vision_meta_shape) == 5:
+    image_height, image_width = vision_meta_shape[3], vision_meta_shape[4]
 else:
-    _img_h, _img_w = _img_meta_shape[2], _img_meta_shape[3]
-if isinstance(_img_h, int) and isinstance(_img_w, int):
-    input_image_size = [_img_h, _img_w]
+    image_height, image_width = vision_meta_shape[2], vision_meta_shape[3]
+if isinstance(image_height, int) and isinstance(image_width, int):
+    input_image_size = [image_height, image_width]
 else:
-    _test_imgs = TEST_IMAGE if isinstance(TEST_IMAGE, list) else [TEST_IMAGE]
-    _first_valid = next((p for p in _test_imgs if is_valid_image_path(p)), None)
-    if _first_valid:
-        with Image.open(_first_valid) as _img:
-            input_image_size = [_img.height, _img.width]
-    else:
-        input_image_size = INPUT_IMAGE_SIZE
+    input_image_size = INPUT_IMAGE_SIZE[:]
 
 # --- Rotary Image (Prefill + Decode) ---
 ort_session_Rotary_Prefill = create_session(onnx_model_Rotary_Prefill, **packed_settings)
-binding_Rotary_Prefill  = ort_session_Rotary_Prefill.io_binding()
 in_name_Rotary_Prefill  = get_in_names(ort_session_Rotary_Prefill)
 out_name_Rotary_Prefill = get_out_names(ort_session_Rotary_Prefill)
 
 ort_session_Rotary_Decode = create_session(onnx_model_Rotary_Decode, **packed_settings)
-binding_Rotary_Decode  = ort_session_Rotary_Decode.io_binding()
 in_name_Rotary_Decode  = get_in_names(ort_session_Rotary_Decode)[0]
 out_name_Rotary_Decode = get_out_names(ort_session_Rotary_Decode)
 
 # --- Main ---
 ort_session_Main = create_session(onnx_model_Main, **packed_settings)
-binding_Main     = ort_session_Main.io_binding()
 print(f"Usable Providers: {ort_session_Main.get_providers()}")
 
 
@@ -2988,245 +3019,243 @@ vocab_size = ort_session_Main._outputs_meta[num_keys_values_Main].shape[1]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# State buffer setup
+# State Buffer Setup
 # ══════════════════════════════════════════════════════════════════════════════
-if "uint8" in kv_dtype_str or "int8" in kv_dtype_str or "int32" in kv_dtype_str:
-    if "int32" in kv_dtype_str:
-        kv_dtype_Main = np.int32
-    elif "uint8" in kv_dtype_str:
-        kv_dtype_Main = np.uint8
-    else:
-        kv_dtype_Main = np.int8
-
-    if in_name_Main_key_scales:
-        scale_dtype_Main = (
-            np.float16
-            if "float16" in in_meta_Main_by_name[in_name_Main_key_scales[0]].type
-            else np.float32
-        )
-        k_scales_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_key_scales[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
-        )
-        v_scales_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_value_scales[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-        )
-        k_biases_Main = (
-            create_ort_with_meta_shape(
-                in_meta_Main_by_name[in_name_Main_key_biases[0]],
-                scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
-            ) if in_name_Main_key_biases else None
-        )
-        v_biases_Main = (
-            create_ort_with_meta_shape(
-                in_meta_Main_by_name[in_name_Main_value_biases[0]],
-                scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-            ) if in_name_Main_value_biases else None
-        )
-    else:
-        k_scales_Main = None
-        k_biases_Main = None
-        v_scales_Main = None
-        v_biases_Main = None
+if "int32" in kv_dtype_str:
+    kv_dtype_Main = np.int32
+elif "uint8" in kv_dtype_str:
+    kv_dtype_Main = np.uint8
+elif "int8" in kv_dtype_str:
+    kv_dtype_Main = np.int8
 else:
     kv_dtype_Main = np.float16 if "float16" in kv_dtype_str else np.float32
-    k_scales_Main = None
-    k_biases_Main = None
-    v_scales_Main = None
-    v_biases_Main = None
 
-past_keys_Main = create_ort_with_meta_shape(
-    in_meta_Main_by_name[in_name_Main_keys[0]], kv_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
-)
-past_values_Main = create_ort_with_meta_shape(
-    in_meta_Main_by_name[in_name_Main_values[0]], kv_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-)
-past_conv_states_Main = (
-    create_ort_with_meta_shape(
-        in_meta_Main_by_name[in_name_Main_conv_states[0]], np.float16, kv_device, DEVICE_ID,
-    ) if in_name_Main_conv_states else None
-)
-past_recurrent_states_Main = (
-    create_ort_with_meta_shape(
-        in_meta_Main_by_name[in_name_Main_recurrent_states[0]], np.float16, kv_device, DEVICE_ID,
-    ) if in_name_Main_recurrent_states else None
-)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Determine mode and build prompt
-# ══════════════════════════════════════════════════════════════════════════════
-tokenizer = AutoTokenizer.from_pretrained(download_path, trust_remote_code=True)
-STOP_TOKEN_SET = set(STOP_TOKEN)
-
-
-# Determine test modes
-test_image_paths = TEST_IMAGE if isinstance(TEST_IMAGE, list) else ([TEST_IMAGE] if TEST_IMAGE else [])
-valid_images = [p for p in test_image_paths if is_valid_image_path(p)]
-num_runtime_images = min(len(valid_images), vision_batch_size)
-
-if not valid_images:
-    raise RuntimeError("Surya OCR requires image input. No valid image found in TEST_IMAGE.")
-test_modes = [("image", query) for query in PROMPT_MAP.values()]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# One-time image processing: encode vision embeddings once, reuse for all tasks
-# ══════════════════════════════════════════════════════════════════════════════
-runtime_prompt_head_len = compute_prompt_head_len(tokenizer)
-cached_vision_embeds = None
-
-if valid_images:
-    print("\nStart to Process the Image(s) (one-time)...")
-    vision_start_time = time.time()
-
-    # Load and preprocess images
-    images = []
-    for img_path in valid_images[:num_runtime_images]:
-        images.append(load_image_letterbox(img_path, input_image_size[0], input_image_size[1]))
-    blank_image = np.full((3, input_image_size[0], input_image_size[1]), 128, dtype=np.uint8)
-    while len(images) < vision_batch_size:
-        images.append(blank_image)
-    pixel_values = np.stack(images, axis=0)
-    if INPUT_IMAGE_DIM == 5:
-        pixel_values = np.expand_dims(pixel_values, axis=1)
-
-    # Run Embed with the first task's prompt to get text_hidden_states
-    _first_query = list(PROMPT_MAP.values())[0]
-    _first_tokens, _ = build_prompt_and_mm_types(_first_query, num_images=vision_batch_size)
-    _first_input_ids = onnxruntime.OrtValue.ortvalue_from_numpy(_first_tokens, device_type, DEVICE_ID)
-    _bind_embed = ort_session_Embed.io_binding()
-    _bind_embed.bind_ortvalue_input(in_name_Embed, _first_input_ids)
-    bind_ort_out(_bind_embed, [out_name_Embed], _ort_device_type)
-    run(ort_session_Embed, _bind_embed)
-    _first_hidden = _bind_embed.get_outputs()[0]
-
-    # Run Vision model (the expensive step) once
-    _bind_vision = ort_session_Vision.io_binding()
-    _bind_vision.bind_ortvalue_input(in_name_Vision[0], onnxruntime.OrtValue.ortvalue_from_numpy(pixel_values, device_type, DEVICE_ID))
-    _bind_vision.bind_ortvalue_input(in_name_Vision[1], _first_hidden)
-    bind_ort_out(_bind_vision, [out_name_Vision], _ort_device_type)
-    run(ort_session_Vision, _bind_vision)
-    _first_concat = _bind_vision.get_outputs()[0]
-
-    # Extract and cache the vision embeddings (independent of text content)
-    _concat_np = _first_concat.numpy()
-    cached_vision_embeds = _concat_np[:, runtime_prompt_head_len:runtime_prompt_head_len + vision_embed_size, :].copy()
-
-    print(f"\nImage Process Complete. Time Cost: {time.time() - vision_start_time:.3f} Seconds")
-    del _first_concat, _first_hidden, _first_input_ids, _bind_embed, _bind_vision, _concat_np, pixel_values
-
-
-for task_index, (_, current_query) in enumerate(test_modes, 1):
-    # Identify task type from query content
-    if "HTML" in current_query or "OCR" in current_query:
-        task_label = "OCR"
-    elif "layout" in current_query.lower():
-        task_label = "Layout"
-    elif "table" in current_query.lower():
-        task_label = "Table"
-    else:
-        task_label = "Text"
-    decoding_method = "Beam Search" if USE_BEAM_SEARCH else "Greedy Search"
-    print(f"\n{'═' * 60}")
-    print(f"  Task {task_index}/{len(test_modes)}: {task_label} (image mode, {decoding_method})")
-    print(f"{'═' * 60}")
-
-    query = current_query
-    tokens, mm_token_type_ids = build_prompt_and_mm_types(
-        query,
-        num_images=vision_batch_size,
+scale_dtype_Main = None
+if in_name_Main_key_scales:
+    scale_dtype_Main = (
+        np.float16
+        if "float16" in in_meta_Main_by_name[in_name_Main_key_scales[0]].type
+        else np.float32
     )
 
-    num_prefill = tokens.shape[-1]
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Shared OrtValue buffers (recreated for each test mode)
-    # ══════════════════════════════════════════════════════════════════════════════
-    input_ids        = onnxruntime.OrtValue.ortvalue_from_numpy(tokens, device_type, DEVICE_ID)
-    ids_len          = create_ort_with_data([num_prefill], np.int64, device_type, DEVICE_ID)
-    init_history_len = create_ort_with_data([0],           np.int64, device_type, DEVICE_ID)
-    topK             = create_ort_with_data([TOP_K],       np.int64, device_type, DEVICE_ID)
-    beam_size_ort    = create_ort_with_data([BEAM_SIZE],   np.int64, device_type, DEVICE_ID)
-
-    attention_mask_buf = create_ort_with_shape((1, 1, 1, 1, 1), hidden_dtype_Main, device_type, DEVICE_ID)
-    _out_meta_Rotary_Decode = ort_session_Rotary_Decode._outputs_meta
-    rotary_cos_buf = create_ort_with_shape(_out_meta_Rotary_Decode[0].shape, hidden_dtype_Main, device_type, DEVICE_ID)
-    rotary_sin_buf = create_ort_with_shape(_out_meta_Rotary_Decode[1].shape, hidden_dtype_Main, device_type, DEVICE_ID)
-    hidden_states_buf = create_ort_with_meta_shape(
-        in_meta_Main[num_keys_values_Main],
-        hidden_dtype_Main, device_type, DEVICE_ID,
-        batch_size=BEAM_SIZE, seq_axis=1, seq_len=1,
+def build_state_buffers(batch_size):
+    """Build empty KV state buffers for a fresh generation run."""
+    past_keys = create_ort_with_meta_shape(
+        in_meta_Main_by_name[in_name_Main_keys[0]], kv_dtype_Main,
+        kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=-1,
     )
-    save_id_buf = create_ort_with_shape((BEAM_SIZE, 0), np.int32, device_type, DEVICE_ID)
-    prefill_logits_buf = create_ort_with_shape((1, vocab_size), hidden_dtype_Main, device_type, DEVICE_ID)
-    decode_logits_buf = create_ort_with_shape((BEAM_SIZE, vocab_size), hidden_dtype_Main, device_type, DEVICE_ID)
-    max_idx_buf = create_ort_with_shape((1, 1), np.int32, device_type, DEVICE_ID)
-
-    # Reset KV state buffers for fresh generation
-    past_keys_Main = create_ort_with_meta_shape(
-        in_meta_Main_by_name[in_name_Main_keys[0]], kv_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
+    past_values = create_ort_with_meta_shape(
+        in_meta_Main_by_name[in_name_Main_values[0]], kv_dtype_Main,
+        kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=3,
     )
-    past_values_Main = create_ort_with_meta_shape(
-        in_meta_Main_by_name[in_name_Main_values[0]], kv_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-    )
+    key_scales = value_scales = key_biases = value_biases = None
+    if in_name_Main_key_scales:
+        key_scales = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_key_scales[0]], scale_dtype_Main,
+            kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=-1,
+        )
+        value_scales = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_value_scales[0]], scale_dtype_Main,
+            kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=3,
+        )
+    if in_name_Main_key_biases:
+        key_biases = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_key_biases[0]], scale_dtype_Main,
+            kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=-1,
+        )
+        value_biases = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_value_biases[0]], scale_dtype_Main,
+            kv_device, DEVICE_ID, batch_size=batch_size, seq_axis=3,
+        )
+    conv_states = recurrent_states = None
     if in_name_Main_conv_states:
-        past_conv_states_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_conv_states[0]], np.float16, kv_device, DEVICE_ID,
+        conv_states = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_conv_states[0]], np.float16,
+            kv_device, DEVICE_ID, batch_size=batch_size,
         )
     if in_name_Main_recurrent_states:
-        past_recurrent_states_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_recurrent_states[0]], np.float16, kv_device, DEVICE_ID,
+        recurrent_states = create_ort_with_meta_shape(
+            in_meta_Main_by_name[in_name_Main_recurrent_states[0]], np.float16,
+            kv_device, DEVICE_ID, batch_size=batch_size,
         )
-    if k_scales_Main is not None:
-        k_scales_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_key_scales[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
-        )
-        v_scales_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_value_scales[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-        )
-    if k_biases_Main is not None:
-        k_biases_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_key_biases[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=-1,
-        )
-        v_biases_Main = create_ort_with_meta_shape(
-            in_meta_Main_by_name[in_name_Main_value_biases[0]],
-            scale_dtype_Main, kv_device, DEVICE_ID, seq_axis=3,
-        )
+    return past_keys, past_values, key_scales, value_scales, key_biases, value_biases, conv_states, recurrent_states
 
-    # Recreate IO bindings for a fresh run
-    binding_Embed = ort_session_Embed.io_binding()
-    binding_Main = ort_session_Main.io_binding()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Determine Mode and Build Prompt
+# ══════════════════════════════════════════════════════════════════════════════
+tokenizer = AutoTokenizer.from_pretrained(download_path, trust_remote_code=True)
+stop_token_set = set(STOP_TOKEN)
+runtime_prompt_head_len = compute_prompt_head_len(tokenizer)
+
+# Resolve decoding parameters
+use_beam_search = USE_BEAM_SEARCH
+top_k_value = TOP_K
+beam_size_value = BEAM_SIZE
+if use_beam_search and top_k_value < beam_size_value:
+    top_k_value = beam_size_value
+if top_k_value < 2 or beam_size_value < 2:
+    use_beam_search = False
+if not use_beam_search:
+    beam_size_value = 1
+use_penalty = REPEAT_PENALTY != 1.0
+
+# Determine test images
+test_image_paths = TEST_IMAGE if isinstance(TEST_IMAGE, list) else [TEST_IMAGE]
+valid_images = [p for p in test_image_paths if is_valid_image_path(p)]
+if not valid_images:
+    raise RuntimeError("Surya OCR requires image input. No valid image found in TEST_IMAGE.")
+
+if dynamic_image_shape:
+    runtime_images = valid_images
+    prompt_num_images = len(runtime_images)
+else:
+    runtime_images = valid_images[:vision_batch_size]
+    prompt_num_images = vision_batch_size
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pre-process Vision Embeddings (one-time, shared across tasks)
+# ══════════════════════════════════════════════════════════════════════════════
+print("\nProcessing image(s) (one-time)...")
+vision_start_time = time.time()
+
+pixel_values = load_images(
+    runtime_images, input_image_size[0], input_image_size[1],
+    vision_batch_size, dynamic_image_shape, input_dim=len(vision_meta_shape),
+)
+
+# Run embedding + vision on a reference prompt to extract vision embeddings
+first_query = next(iter(PROMPT_MAP.values()))
+first_tokens, _ = build_prompt_and_mm_types(first_query, num_images=prompt_num_images)
+first_input_ids = create_ort_from_numpy(first_tokens, device_type, DEVICE_ID)
+
+bind_embed = ort_session_Embed.io_binding()
+bind_embed.bind_ortvalue_input(in_name_Embed, first_input_ids)
+bind_ort_out(bind_embed, [out_name_Embed], _ort_device_type)
+run(ort_session_Embed, bind_embed)
+first_hidden = bind_embed.get_outputs()[0]
+first_hidden_np = first_hidden.numpy()
+
+bind_vision = ort_session_Vision.io_binding()
+bind_vision.bind_ortvalue_input(in_name_Vision[0], create_ort_from_numpy(pixel_values, device_type, DEVICE_ID))
+bind_vision.bind_ortvalue_input(in_name_Vision[1], first_hidden)
+bind_ort_out(bind_vision, [out_name_Vision], _ort_device_type)
+run(ort_session_Vision, bind_vision)
+first_concat_np = bind_vision.get_outputs()[0].numpy()
+
+# Cache the vision embeddings for reuse across all tasks
+cached_vision_embeds = first_concat_np[
+    :, runtime_prompt_head_len:runtime_prompt_head_len + vision_embed_size, :
+].copy()
+
+print(f"Image processing complete. Time: {time.time() - vision_start_time:.3f}s")
+del first_concat_np, first_hidden, first_hidden_np, first_input_ids, bind_embed, bind_vision, pixel_values
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Load Decode Sessions (once, reuse per task)
+# ══════════════════════════════════════════════════════════════════════════════
+if use_beam_search:
+    ort_session_First_Beam  = create_session(onnx_model_First_Beam, **packed_settings)
+    ort_session_Second_Beam = create_session(onnx_model_Second_Beam, **packed_settings)
+else:
+    ort_session_Greedy = create_session(onnx_model_Greedy, **packed_settings)
+    ort_session_Argmax = create_session(onnx_model_Argmax, **packed_settings)
+
+if use_penalty:
+    ort_session_Penalty = create_session(onnx_model_Penalty, **packed_settings)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pre-allocate Shared Buffers (reused across all tasks)
+# ══════════════════════════════════════════════════════════════════════════════
+init_history_len   = create_ort_with_data([0], np.int64, device_type, DEVICE_ID)
+top_k_ort          = create_ort_with_data([top_k_value], np.int64, device_type, DEVICE_ID)
+beam_size_ort      = create_ort_with_data([beam_size_value], np.int64, device_type, DEVICE_ID)
+
+out_meta_Rotary_Decode = ort_session_Rotary_Decode._outputs_meta
+attention_mask_buf = create_ort_with_shape((1, 1, 1, 1, 1), hidden_dtype_Main, device_type, DEVICE_ID)
+rotary_cos_buf     = create_ort_with_meta_shape(out_meta_Rotary_Decode[0], hidden_dtype_Main, device_type, DEVICE_ID)
+rotary_sin_buf     = create_ort_with_meta_shape(out_meta_Rotary_Decode[1], hidden_dtype_Main, device_type, DEVICE_ID)
+hidden_states_buf  = create_ort_with_meta_shape(
+    in_meta_Main[num_keys_values_Main], hidden_dtype_Main, device_type, DEVICE_ID,
+    batch_size=beam_size_value, seq_axis=1, seq_len=1,
+)
+save_id_buf        = create_ort_with_shape((beam_size_value, 0), np.int32, device_type, DEVICE_ID)
+prefill_logits_buf = create_ort_with_shape((1, vocab_size), hidden_dtype_Main, device_type, DEVICE_ID)
+decode_logits_buf  = create_ort_with_shape((beam_size_value, vocab_size), hidden_dtype_Main, device_type, DEVICE_ID)
+max_idx_buf        = create_ort_with_shape((1, 1), np.int32, device_type, DEVICE_ID)
+
+if use_beam_search:
+    beam_ids_buf   = create_ort_with_shape((beam_size_value, 1), np.int32, device_type, DEVICE_ID)
+    beam_score_buf = create_ort_with_shape((beam_size_value, 1), hidden_dtype_Main, device_type, DEVICE_ID)
+
+if use_penalty:
+    penalty_dtype = (
+        np.float16
+        if "float16" in ort_session_Penalty._inputs_meta[2].type
+        else np.float32
+    )
+    penalty_value = create_ort_with_data([REPEAT_PENALTY], penalty_dtype, device_type, DEVICE_ID)
+    penalty_range = create_ort_with_data([PENALTY_RANGE], np.int64, device_type, DEVICE_ID)
+
+# ── Beam/Greedy metadata ─────────────────────────────────────────────────
+if use_beam_search:
+    in_name_First_Beam  = get_in_names(ort_session_First_Beam)
+    out_name_First_Beam = get_out_names(ort_session_First_Beam)
+    in_name_First_Beam_parts   = in_name_First_Beam[:num_keys_values_Main_plus_1]
+    out_name_First_Beam_parts  = out_name_First_Beam[:num_keys_values_Main_plus_1]
+    out_name_First_Beam_others = out_name_First_Beam[num_keys_values_Main_plus_1:]
+
+    in_name_Second_Beam  = get_in_names(ort_session_Second_Beam)
+    out_name_Second_Beam = get_out_names(ort_session_Second_Beam)
+    in_name_Second_Beam_parts   = in_name_Second_Beam[:num_keys_values_Main_plus_1]
+    out_name_Second_Beam_parts  = out_name_Second_Beam[:num_keys_values_Main_plus_1]
+    out_name_Second_Beam_others = out_name_Second_Beam[num_keys_values_Main_plus_1:]
+else:
+    in_name_Greedy  = get_in_names(ort_session_Greedy)
+    out_name_Greedy = get_out_names(ort_session_Greedy)
+    in_name_Argmax  = get_in_names(ort_session_Argmax)[0]
+    out_name_Argmax = get_out_names(ort_session_Argmax)[0]
+
+if use_penalty:
+    in_name_Penalty  = get_in_names(ort_session_Penalty)
+    out_name_Penalty = get_out_names(ort_session_Penalty)[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task Loop: Iterate Over Prompts
+# ══════════════════════════════════════════════════════════════════════════════
+for task_index, (task_name, query) in enumerate(PROMPT_MAP.items(), start=1):
+    task_label = task_name.upper()
+    decoding_method = "Beam Search" if use_beam_search else "Greedy Search"
+    print(f"\n{'═' * 60}")
+    print(f"  Task {task_index}/{len(PROMPT_MAP)}: {task_label} (image, {decoding_method})")
+    print(f"{'═' * 60}")
+
+    # ── Task-specific: tokenize prompt ───────────────────────────────────
+    tokens, _ = build_prompt_and_mm_types(query, num_images=prompt_num_images)
+    num_prefill = tokens.shape[-1]
+    input_ids = create_ort_from_numpy(tokens, device_type, DEVICE_ID)
+    ids_len = create_ort_with_data([num_prefill], np.int64, device_type, DEVICE_ID)
+
+    # ── Task-specific: reset KV state ────────────────────────────────────
+    (past_keys_Main, past_values_Main, k_scales_Main, v_scales_Main,
+     k_biases_Main, v_biases_Main, past_conv_states_Main,
+     past_recurrent_states_Main) = build_state_buffers(beam_size_value)
+
+    # ── Create IO bindings (fresh per task) ──────────────────────────────
+    binding_Embed          = ort_session_Embed.io_binding()
+    binding_Main           = ort_session_Main.io_binding()
     binding_Rotary_Prefill = ort_session_Rotary_Prefill.io_binding()
-    binding_Rotary_Decode = ort_session_Rotary_Decode.io_binding()
+    binding_Rotary_Decode  = ort_session_Rotary_Decode.io_binding()
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Decode head sessions
-    # ══════════════════════════════════════════════════════════════════════════════
-    if USE_BEAM_SEARCH:
-
-        ort_session_First_Beam     = create_session(onnx_model_First_Beam, **packed_settings)
-        binding_First_Beam         = ort_session_First_Beam.io_binding()
-        in_name_First_Beam         = get_in_names(ort_session_First_Beam)
-        out_name_First_Beam        = get_out_names(ort_session_First_Beam)
-        in_name_First_Beam_parts   = in_name_First_Beam[:num_keys_values_Main_plus_1]
-        out_name_First_Beam_parts  = out_name_First_Beam[:num_keys_values_Main_plus_1]
-        out_name_First_Beam_others = out_name_First_Beam[num_keys_values_Main_plus_1:]
-
-        ort_session_Second_Beam     = create_session(onnx_model_Second_Beam, **packed_settings)
-        binding_Second_Beam         = ort_session_Second_Beam.io_binding()
-        in_name_Second_Beam         = get_in_names(ort_session_Second_Beam)
-        out_name_Second_Beam        = get_out_names(ort_session_Second_Beam)
-        in_name_Second_Beam_parts   = in_name_Second_Beam[:num_keys_values_Main_plus_1]
-        out_name_Second_Beam_parts  = out_name_Second_Beam[:num_keys_values_Main_plus_1]
-        out_name_Second_Beam_others = out_name_Second_Beam[num_keys_values_Main_plus_1:]
-
-        beam_ids_buf = create_ort_with_shape((BEAM_SIZE, 1), np.int32, device_type, DEVICE_ID)
-        beam_score_buf = create_ort_with_shape((BEAM_SIZE, 1), hidden_dtype_Main, device_type, DEVICE_ID)
+    # ── Setup decoding bindings with pre-allocated buffers ────────────────
+    if use_beam_search:
+        binding_First_Beam  = ort_session_First_Beam.io_binding()
+        binding_Second_Beam = ort_session_Second_Beam.io_binding()
         bind_ort_in_buf(
             binding_First_Beam,
             in_name_First_Beam[num_keys_values_Main_plus_1:num_keys_values_Main_plus_3],
@@ -3235,45 +3264,21 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         bind_ort_in_buf(
             binding_Second_Beam,
             in_name_Second_Beam[num_keys_values_Main_plus_3:],
-            [beam_size_ort, topK],
+            [beam_size_ort, top_k_ort],
         )
     else:
-        ort_session_Greedy = create_session(onnx_model_Greedy, **packed_settings)
-        binding_Greedy     = ort_session_Greedy.io_binding()
-        in_name_Greedy     = get_in_names(ort_session_Greedy)
-        out_name_Greedy    = get_out_names(ort_session_Greedy)
+        binding_Greedy = ort_session_Greedy.io_binding()
         binding_Greedy.bind_ortvalue_input(in_name_Greedy[1], save_id_buf)
+        binding_Argmax = ort_session_Argmax.io_binding()
+        save_id_list = []
 
-        ort_session_Argmax = create_session(onnx_model_Argmax, **packed_settings)
-        binding_Argmax     = ort_session_Argmax.io_binding()
-        in_name_Argmax     = get_in_names(ort_session_Argmax)[0]
-        out_name_Argmax    = get_out_names(ort_session_Argmax)[0]
-        save_id_list       = []
+    if use_penalty:
+        binding_Penalty = ort_session_Penalty.io_binding()
+        bind_ort_in_buf(binding_Penalty, in_name_Penalty[2:], [penalty_value, penalty_range])
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Penalty session
-    # ══════════════════════════════════════════════════════════════════════════════
-    if USE_PENALTY:
-        ort_session_Penalty = create_session(onnx_model_Penalty, **packed_settings)
-        binding_Penalty     = ort_session_Penalty.io_binding()
-        in_name_Penalty     = get_in_names(ort_session_Penalty)
-        out_name_Penalty    = get_out_names(ort_session_Penalty)[0]
-        penalty_dtype = (
-            np.float16
-            if "float16" in ort_session_Penalty._inputs_meta[2].type
-            else np.float32
-        )
-        penalty_value = create_ort_with_data([REPEAT_PENALTY], penalty_dtype, device_type, DEVICE_ID)
-        penalty_range_ort = create_ort_with_data([PENALTY_RANGE], np.int64, device_type, DEVICE_ID)
-        bind_ort_in_buf(binding_Penalty, in_name_Penalty[2:], [penalty_value, penalty_range_ort])
-
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Prefill phase
-    # ══════════════════════════════════════════════════════════════════════════════
-    is_prefill_step    = True
+    # ── Prefill: Embed + Vision Concat ───────────────────────────────────
+    is_prefill_step = True
     prefill_start_time = time.time()
-    prefill_elapsed    = 0.0
-    decode_start_time  = prefill_start_time
 
     binding_Embed.bind_ortvalue_input(in_name_Embed, input_ids)
     bind_ort_out(binding_Embed, [out_name_Embed], _ort_device_type)
@@ -3281,37 +3286,32 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
     hidden_states = binding_Embed.get_outputs()[0]
     binding_Embed.bind_ortvalue_input(in_name_Embed, max_idx_buf)
 
-    generate_limit = MAX_SEQ_LEN - num_prefill
-
-    # Use cached vision embeddings - reconstruct concat without re-running vision encoder
-    text_np = hidden_states.numpy()
-    head = text_np[:, :runtime_prompt_head_len, :]
-    tail = text_np[:, runtime_prompt_head_len:, :]
-    concat_np = np.concatenate([head, cached_vision_embeds, tail], axis=1)
-    concat_hidden_states = onnxruntime.OrtValue.ortvalue_from_numpy(
-        concat_np.astype(hidden_dtype_Main), device_type, DEVICE_ID
+    # Splice cached vision embeddings into the text hidden states
+    text_hidden_np = hidden_states.numpy()
+    concat_np = np.concatenate([
+        text_hidden_np[:, :runtime_prompt_head_len, :],
+        cached_vision_embeds,
+        text_hidden_np[:, runtime_prompt_head_len:, :],
+    ], axis=1)
+    concat_hidden_states = create_ort_from_numpy(
+        concat_np.astype(hidden_dtype_Main, copy=False), device_type, DEVICE_ID
     )
 
-    # Image concat: adds vision tokens to prefill
     num_prefill += vision_embed_size
     ids_len = create_ort_with_data([num_prefill], np.int64, device_type, DEVICE_ID)
-    generate_limit -= vision_embed_size
+    generate_limit = MAX_SEQ_LEN - num_prefill
 
-    # Image rotary prefill
+    # ── Prefill: Rotary Embeddings ───────────────────────────────────────
     bind_ort_in_buf(binding_Rotary_Prefill, in_name_Rotary_Prefill, [ids_len, init_history_len])
     bind_ort_out(binding_Rotary_Prefill, out_name_Rotary_Prefill, _ort_device_type)
     run(ort_session_Rotary_Prefill, binding_Rotary_Prefill)
     rotary_cos, rotary_sin, attention_mask, kv_seq_len = binding_Rotary_Prefill.get_outputs()
+
+    # ── Prefill: Bind Main Inputs ────────────────────────────────────────
     binding_Main.bind_ortvalue_input(in_name_Main[num_keys_values_Main], concat_hidden_states)
-
-    # Set decode rotary
-    binding_Rotary_Decode.bind_ortvalue_input(in_name_Rotary_Decode, kv_seq_len)
-    bind_ort_out_buf(binding_Rotary_Decode, out_name_Rotary_Decode, [rotary_cos_buf, rotary_sin_buf, kv_seq_len])
-    ort_session_Rotary_Decode = ort_session_Rotary_Decode
-    binding_Rotary_Decode = binding_Rotary_Decode
-
     bind_ort_in_buf(binding_Main, in_name_Main[idx_rotary_cos:], [rotary_cos, rotary_sin, attention_mask])
 
+    # Bind KV state inputs
     for name in in_name_Main_keys:
         binding_Main.bind_ortvalue_input(name, past_keys_Main)
     for name in in_name_Main_values:
@@ -3333,47 +3333,53 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
         for name in in_name_Main_recurrent_states:
             binding_Main.bind_ortvalue_input(name, past_recurrent_states_Main)
 
+    # Bind Main outputs
     bind_ort_out(binding_Main, out_name_Main_kv, _ort_device_type)
     binding_Main.bind_ortvalue_output(out_name_Main_logits, prefill_logits_buf)
 
-    if USE_PENALTY:
+    # Bind Rotary Decode (reused across all decode steps)
+    binding_Rotary_Decode.bind_ortvalue_input(in_name_Rotary_Decode, kv_seq_len)
+    bind_ort_out_buf(binding_Rotary_Decode, out_name_Rotary_Decode, [rotary_cos_buf, rotary_sin_buf, kv_seq_len])
+
+    # ── Prefill: Wire Penalty / Decode Bindings ──────────────────────────
+    if use_penalty:
         binding_Penalty.bind_ortvalue_input(in_name_Penalty[0], prefill_logits_buf)
         binding_Penalty.bind_ortvalue_output(out_name_Penalty, prefill_logits_buf)
 
-    if USE_BEAM_SEARCH:
+    if use_beam_search:
         binding_First_Beam.bind_ortvalue_input(in_name_First_Beam[num_keys_values_Main], prefill_logits_buf)
-    elif USE_PENALTY:
+    elif use_penalty:
         binding_Greedy.bind_ortvalue_input(in_name_Greedy[0], prefill_logits_buf)
         binding_Greedy.bind_ortvalue_output(out_name_Greedy[0], max_idx_buf)
     else:
         binding_Argmax.bind_ortvalue_input(in_name_Argmax, prefill_logits_buf)
         binding_Argmax.bind_ortvalue_output(out_name_Argmax, max_idx_buf)
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Decode loop
-    # ══════════════════════════════════════════════════════════════════════════════
-    if USE_BEAM_SEARCH:
+    # ── Print header ─────────────────────────────────────────────────────
+    if use_beam_search:
         print(f"\n  Prompt: {query}")
-        print(f"  Decoding with beam search (beam_size={BEAM_SIZE}, top_k={TOP_K})...")
+        print(f"  Decoding (beam_size={beam_size_value}, top_k={top_k_value})...")
     else:
         print(f"\n  Prompt: {query}\n  Output: ", end="", flush=True)
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Autoregressive Decode Loop
+    # ══════════════════════════════════════════════════════════════════════
     num_decode = 0
-    save_id    = None
+    save_id = None
+    decode_start_time = prefill_start_time
 
     while num_decode < generate_limit:
-
-        # ── 1. Run Main Model ──────────────────────────────────────────────────────
         run(ort_session_Main, binding_Main)
         outputs_Main = binding_Main.get_outputs()
 
-        # ── 2. Apply Repetition Penalty (if enabled) ─────────────────────
-        if USE_PENALTY and num_decode >= PENALTY_RANGE:
+        # Apply repetition penalty after warmup
+        if use_penalty and num_decode >= PENALTY_RANGE:
             binding_Penalty.bind_ortvalue_input(in_name_Penalty[1], save_id)
             run(ort_session_Penalty, binding_Penalty)
 
-        # ── 3. Token Selection ─────────────────────────────────────────────────────
-        if USE_BEAM_SEARCH:
+        # ── Beam Search Path ─────────────────────────────────────────────
+        if use_beam_search:
             if is_prefill_step:
                 bind_ort_in_buf(binding_First_Beam, in_name_First_Beam_parts, outputs_Main)
                 bind_ort_out(binding_First_Beam, out_name_First_Beam_parts, _ort_device_type)
@@ -3390,26 +3396,27 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
                 outputs_Beam = binding_Second_Beam.get_outputs()
 
             max_logits_idx = max_idx_buf.numpy().flat[0]
-            if max_logits_idx in STOP_TOKEN_SET:
+            if max_logits_idx in stop_token_set:
                 break
 
             save_id = outputs_Beam[num_keys_values_Main]
             bind_ort_in_buf(binding_Main, in_name_Main_kv, outputs_Beam)
             binding_Second_Beam.bind_ortvalue_input(in_name_Second_Beam[num_keys_values_Main_plus_1], save_id)
+
+        # ── Greedy Search Path ───────────────────────────────────────────
         else:
-            if USE_PENALTY:
+            if use_penalty:
                 binding_Greedy._iobinding.bind_output(out_name_Greedy[1], _ort_device_type)
                 run(ort_session_Greedy, binding_Greedy)
-                greedy_outputs = binding_Greedy.get_outputs()
-                save_id = greedy_outputs[1]
+                save_id = binding_Greedy.get_outputs()[1]
             else:
                 run(ort_session_Argmax, binding_Argmax)
 
             max_logits_idx = max_idx_buf.numpy().flat[0]
-            if max_logits_idx in STOP_TOKEN_SET:
+            if max_logits_idx in stop_token_set:
                 break
 
-            if USE_PENALTY:
+            if use_penalty:
                 binding_Greedy.bind_ortvalue_input(in_name_Greedy[1], save_id)
             else:
                 save_id_list.append(max_logits_idx)
@@ -3417,84 +3424,64 @@ for task_index, (_, current_query) in enumerate(test_modes, 1):
             bind_ort_in_buf(binding_Main, in_name_Main_kv, outputs_Main)
             print(tokenizer.decode(max_logits_idx), end="", flush=True)
 
-        # ── 4. Re-bind Main KV outputs (fresh allocation each step) ──────
+        # ── Transition from prefill to decode phase ───────────────────────
         bind_ort_out(binding_Main, out_name_Main_kv, _ort_device_type)
 
-        # ── 5. Transition: prefill → decode (executes once) ──────────────
         if is_prefill_step:
+            # Switch Main to single-token decode mode
             binding_Main.bind_ortvalue_input(in_name_Main[num_keys_values_Main], hidden_states_buf)
             bind_ort_in_buf(binding_Main, in_name_Main[idx_rotary_cos:], [rotary_cos_buf, rotary_sin_buf, attention_mask_buf])
             binding_Main.bind_ortvalue_output(out_name_Main_logits, decode_logits_buf)
             binding_Embed.bind_ortvalue_output(out_name_Embed, hidden_states_buf)
 
-            if USE_PENALTY:
+            # Redirect penalty/decode to decode logits buffer
+            if use_penalty:
                 binding_Penalty.bind_ortvalue_input(in_name_Penalty[0], decode_logits_buf)
                 binding_Penalty.bind_ortvalue_output(out_name_Penalty, decode_logits_buf)
 
-            if USE_BEAM_SEARCH:
+            if use_beam_search:
                 binding_Second_Beam.bind_ortvalue_input(in_name_Second_Beam[num_keys_values_Main], decode_logits_buf)
                 binding_Embed.bind_ortvalue_input(in_name_Embed, beam_ids_buf)
-            elif USE_PENALTY:
+            elif use_penalty:
                 binding_Greedy.bind_ortvalue_input(in_name_Greedy[0], decode_logits_buf)
             else:
                 binding_Argmax.bind_ortvalue_input(in_name_Argmax, decode_logits_buf)
 
             is_prefill_step = False
             decode_start_time = time.time()
-            prefill_elapsed = decode_start_time - prefill_start_time
 
-        # ── 6. Prepare next step: Embed + Rotary ─────────────────────────────
+        # ── Next-token embedding + rotary ────────────────────────────────
         run(ort_session_Embed, binding_Embed)
         run(ort_session_Rotary_Decode, binding_Rotary_Decode)
         num_decode += 1
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # Results
-    # ══════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════
+    # Task Results & Performance
+    # ══════════════════════════════════════════════════════════════════════
     decode_end_time = time.time()
-
-    if num_decode < 2:
-        prefill_elapsed = 0.0
-        decode_elapsed = 0.0
-    else:
-        decode_elapsed = decode_end_time - decode_start_time
-
+    prefill_elapsed = decode_start_time - prefill_start_time
+    decode_elapsed = decode_end_time - decode_start_time
     total_elapsed = decode_end_time - prefill_start_time
 
-    prefill_tokens_per_second = num_prefill / prefill_elapsed if prefill_elapsed > 0 else 0.0
-    decode_tokens_per_second = num_decode / decode_elapsed if decode_elapsed > 0 else 0.0
-    overall_tokens_per_second = (num_decode + 1) / total_elapsed if total_elapsed > 0 else 0.0
+    if num_decode < 2:
+        prefill_elapsed = decode_elapsed = 0.0
 
-    if USE_PENALTY or USE_BEAM_SEARCH:
-        result = (
-            tokenizer.decode(save_id.numpy().flat[:num_decode], skip_special_tokens=True)
-            if save_id is not None
-            else ""
-        )
+    # Decode result
+    if use_beam_search and save_id is not None:
+        result = tokenizer.decode(save_id.numpy()[0, :num_decode], skip_special_tokens=True)
+    elif use_penalty and save_id is not None:
+        result = tokenizer.decode(save_id.numpy()[0, :num_decode], skip_special_tokens=True)
     else:
         result = tokenizer.decode(save_id_list, skip_special_tokens=True)
 
-    # Print generated output only for beam search (greedy already streams inline)
-    if USE_BEAM_SEARCH:
-        print(
-            f"\n\n{chr(9472) * 60}\n"
-            f"  Generated Output ({task_label})\n"
-            f"{chr(9472) * 60}\n"
-            f"{result}\n"
-            f"{chr(9472) * 60}"
-        )
+    # Print result
+    if use_beam_search:
+        print(f"\n{'─' * 60}")
+        print(f"  Generated Output ({task_label})")
+        print(f"{'─' * 60}")
+        print(result)
+        print(f"{'─' * 60}")
     else:
-        print()  # newline after streamed output
+        print()
 
-    print(
-        f"\n{chr(9472) * 60}\n"
-        f"  Performance Summary - Task {task_index}: {task_label}\n"
-        f"{chr(9472) * 60}\n"
-        f"  {'Phase':<12} {'Speed':>14} {'Tokens':>8} {'Time':>10}\n"
-        f"  {chr(9472) * 52}\n"
-        f"  {'Prefill':<12} {prefill_tokens_per_second:>10.2f} t/s {num_prefill:>8d} {prefill_elapsed:>8.3f}s\n"
-        f"  {'Decode':<12} {decode_tokens_per_second:>10.2f} t/s {num_decode:>8d} {decode_elapsed:>8.3f}s\n"
-        f"  {chr(9472) * 52}\n"
-        f"  {'Overall':<12} {overall_tokens_per_second:>10.2f} t/s {num_decode + 1:>8d} {total_elapsed:>8.3f}s\n"
-        f"{chr(9472) * 60}\n"
-    )
+    print_performance(task_index, task_label, num_prefill, num_decode, prefill_elapsed, decode_elapsed, total_elapsed)
