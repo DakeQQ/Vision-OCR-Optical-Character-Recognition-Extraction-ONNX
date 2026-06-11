@@ -14,7 +14,7 @@
 |:------------:|:------------:|:-----------------:|:-------------------------:|:-----------------:|
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LightOnOCR-2-1B<br>Q8F32 |        24         |
 | Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | FireRedOCR-2B<br>Q8F32   |        15         |
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | SuryaOCR-2-0.65B<br>Q8F32 |        26         |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | SuryaOCR-2-0.65B<br>Q8F32 |       40         |
 
 
 
