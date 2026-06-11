@@ -105,7 +105,7 @@ def load_image_resize(path, target_h, target_w):
 	return np.ascontiguousarray(np.asarray(image, dtype=np.uint8).transpose(2, 0, 1))
 
 
-def load_images(image_paths, target_h, target_w, batch_size, dynamic_shape):
+def load_images(image_paths, target_h, target_w, batch_size, dynamic_shape, input_dim=5):
 	if not image_paths:
 		raise ValueError("TEST_IMAGE must contain at least one valid image path.")
 
@@ -116,7 +116,8 @@ def load_images(image_paths, target_h, target_w, batch_size, dynamic_shape):
 			images.append(blank_image)
 
 	pixel_values = np.stack(images, axis=0)
-	pixel_values = np.expand_dims(pixel_values, axis=1)
+	if input_dim == 5:
+		pixel_values = np.expand_dims(pixel_values, axis=1)
 	return np.ascontiguousarray(pixel_values)
 
 
@@ -360,8 +361,12 @@ def main():
 		vision_batch_meta if isinstance(vision_batch_meta, int) else VISION_BATCH_SIZE
 	)
 
-	image_height = vision_meta_shape[3]
-	image_width = vision_meta_shape[4]
+	if len(vision_meta_shape) == 5:
+		image_height = vision_meta_shape[3]
+		image_width = vision_meta_shape[4]
+	else:
+		image_height = vision_meta_shape[2]
+		image_width = vision_meta_shape[3]
 	if isinstance(image_height, int) and isinstance(image_width, int):
 		input_image_size = [image_height, image_width]
 	else:
@@ -545,6 +550,7 @@ def main():
 		input_image_size[1],
 		vision_batch_size,
 		dynamic_image_shape,
+		input_dim=len(vision_meta_shape),
 	)
 
 	first_query = next(iter(PROMPT_MAP.values()))
