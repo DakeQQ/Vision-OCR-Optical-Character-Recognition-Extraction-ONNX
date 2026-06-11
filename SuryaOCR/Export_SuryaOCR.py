@@ -3089,7 +3089,8 @@ if valid_images:
     while len(images) < vision_batch_size:
         images.append(blank_image)
     pixel_values = np.stack(images, axis=0)
-    pixel_values = np.expand_dims(pixel_values, axis=1)
+    if INPUT_IMAGE_DIM == 5:
+        pixel_values = np.expand_dims(pixel_values, axis=1)
 
     # Run Embed with the first task's prompt to get text_hidden_states
     _first_query = list(PROMPT_MAP.values())[0]
