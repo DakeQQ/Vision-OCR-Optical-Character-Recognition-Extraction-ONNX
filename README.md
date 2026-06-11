@@ -25,4 +25,6 @@
 - [ ] [PaddleOCR-VL](https://modelscope.cn/models/PaddlePaddle/PaddleOCR-VL-1.6)
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
 - [ ] [NuExtract3](https://github.com/numindai/nuextract)
+- [ ] [Falcon-OCR](https://huggingface.co/tiiuae/Falcon-OCR)
+- [ ] [Falcon-Perception](https://huggingface.co/tiiuae/Falcon-Perception)
 ---
