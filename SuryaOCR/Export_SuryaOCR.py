@@ -2914,7 +2914,10 @@ vision_batch_size = _vision_in_meta.shape[0]
 vision_embed_size = VISION_EMBED_SIZE
 
 _img_meta_shape = _vision_in_meta.shape
-_img_h, _img_w = _img_meta_shape[3], _img_meta_shape[4]
+if len(_img_meta_shape) == 5:
+    _img_h, _img_w = _img_meta_shape[3], _img_meta_shape[4]
+else:
+    _img_h, _img_w = _img_meta_shape[2], _img_meta_shape[3]
 if isinstance(_img_h, int) and isinstance(_img_w, int):
     input_image_size = [_img_h, _img_w]
 else:
