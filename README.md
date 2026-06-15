@@ -23,6 +23,7 @@
 
 ### To-Do List  
 - [ ] [PaddleOCR-VL](https://modelscope.cn/models/PaddlePaddle/PaddleOCR-VL-1.6)
+- [ ] (PP-OCR)[https://modelscope.cn/models/PaddlePaddle/PP-OCRv6_medium_rec]
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
 - [ ] [NuExtract3](https://github.com/numindai/nuextract)
 - [ ] [Falcon-OCR](https://huggingface.co/tiiuae/Falcon-OCR)
