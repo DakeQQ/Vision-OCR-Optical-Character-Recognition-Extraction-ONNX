@@ -13,9 +13,11 @@
 ### 性能 Performance  
 | OS           | Device       | Backend           | Model                     | Tokens per Second |
 |:------------:|:------------:|:-----------------:|:-------------------------:|:-----------------:|
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LightOnOCR-2-1B<br>Q8F32 |        24         |
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | FireRedOCR-2B<br>Q8F32   |        15         |
-| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | SuryaOCR-2-0.65B<br>Q8F32 |       40         |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LightOnOCR-2-1B<br>Q4F32 |        24         |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | FireRedOCR-2B<br>Q4F32   |        15         |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | SuryaOCR-2-0.65B<br>Q4F32 |       40         |
+| Ubuntu-24.04 | Laptop       | CPU <br> i7-1165G7 | LFM2-Extract-0.35B<br>Q4F32 |       85       |
+
 
 
 
