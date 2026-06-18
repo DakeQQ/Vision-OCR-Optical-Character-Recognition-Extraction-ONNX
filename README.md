@@ -5,6 +5,7 @@
    - [LightOnOCR-2](https://modelscope.cn/models/lightonai/LightOnOCR-2-1B)
    - [FireRedOCR](https://modelscope.cn/models/FireRedTeam/FireRed-OCR)
    - [Surya-OCR-2](https://huggingface.co/datalab-to/surya-ocr-2)
+   - [LFM2-Extract](https://huggingface.co/LiquidAI/LFM2-350M-Extract)
 
 
 ---
@@ -23,7 +24,7 @@
 
 ### To-Do List  
 - [ ] [PaddleOCR-VL](https://modelscope.cn/models/PaddlePaddle/PaddleOCR-VL-1.6)
-- [ ] (PP-OCR)[https://modelscope.cn/models/PaddlePaddle/PP-OCRv6_medium_rec]
+- [ ] [PP-OCR](https://modelscope.cn/models/PaddlePaddle/PP-OCRv6_medium_rec)
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
 - [ ] [NuExtract3](https://github.com/numindai/nuextract)
 - [ ] [Falcon-OCR](https://huggingface.co/tiiuae/Falcon-OCR)
