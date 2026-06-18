@@ -13,13 +13,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # =============================================================================
 # CONFIG  -- edit me, then just hit Run.
 # =============================================================================
-path_lfm   = r'/home/DakeQQ/Downloads/LFM2-350M-Extract'                               # local LFM2-Extract model folder. Note: the LFM2 only accept pure text as input, not multimodal. URL: https://huggingface.co/LiquidAI/LFM2-350M-Extract / https://huggingface.co/LiquidAI/LFM2-1.2B-Extract
-onnx_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'LFM2_ONNX')     # output directory for the 9 ONNX graphs
+path_lfm = r'/home/DakeQQ/Downloads/LFM2-350M-Extract'                                 # local LFM2-Extract model folder. Note: the LFM2 only accept pure text as input, not multimodal. URL: https://huggingface.co/LiquidAI/LFM2-350M-Extract / https://huggingface.co/LiquidAI/LFM2-1.2B-Extract
+onnx_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'LFM_ONNX')        # output directory for the 9 ONNX graphs
 
-onnx_model_Embed                = os.path.join(onnx_dir, 'LFM_Embed.onnx')             # token id   -> hidden state
-onnx_model_Rotary_Mask_Prefill  = os.path.join(onnx_dir, 'Rotary_Mask_Prefill.onnx')   # prefill rotary + causal mask
-onnx_model_Rotary_Mask_Decode   = os.path.join(onnx_dir, 'Rotary_Mask_Decode.onnx')    # decode  rotary
-onnx_model_Main                 = os.path.join(onnx_dir, 'LFM_Main.onnx')              # decoder layers + LM head
+onnx_model_Embed                = os.path.join(onnx_dir, 'LLM_Embed.onnx')             # token id   -> hidden state
+onnx_model_Rotary_Mask_Prefill  = os.path.join(onnx_dir, 'Rotary_Prefill.onnx')        # prefill rotary + causal mask
+onnx_model_Rotary_Mask_Decode   = os.path.join(onnx_dir, 'Rotary_Decode.onnx')         # decode  rotary
+onnx_model_Main                 = os.path.join(onnx_dir, 'LLM_Main.onnx')              # decoder layers + LM head
 onnx_model_Greedy               = os.path.join(onnx_dir, 'Greedy_Search.onnx')         # argmax + append
 onnx_model_First_Beam           = os.path.join(onnx_dir, 'First_Beam_Search.onnx')     # 1 -> beam_size
 onnx_model_Second_Beam          = os.path.join(onnx_dir, 'Second_Beam_Search.onnx')    # prune + re-expand
