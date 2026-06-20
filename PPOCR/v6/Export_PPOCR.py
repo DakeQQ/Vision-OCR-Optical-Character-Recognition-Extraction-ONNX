@@ -50,7 +50,6 @@ DO_EXPORT            = True      # Export the ONNX models (skip to reuse existin
 USE_DOC_ORI          = True      # Document orientation classification (runtime stage)
 USE_UNWARP           = True      # UVDoc unwarping (runtime stage)
 USE_TEXTLINE_ORI     = True      # Text-line orientation (fused into rec; sets the int8 use_textline switch)
-USE_ONNX_POSTPROCESS = True      # Run DB postprocess + crops fully in ONNXRuntime (no cv2 in the hot path)
 
 # --- ONNX / runtime --------------------------------------------------------------
 OPSET                    = 20      # >=20 for GridSample + modern Resize behaviour
@@ -1257,9 +1256,8 @@ def export_all():
     # ══════════════════════════════════════════════════════════════════════════
     # Tensor-only ONNXRuntime postprocess stages (no cv2 / numpy in the hot path)
     # ══════════════════════════════════════════════════════════════════════════
-    if USE_ONNX_POSTPROCESS:
-        print('[export] tensor-only onnx-runtime stages ...')
-        export_db_postprocess_onnx(onnx_model_DBPost)
+    print('[export] tensor-only onnx-runtime stages ...')
+    export_db_postprocess_onnx(onnx_model_DBPost)
 
     print('[export] done ->', EXPORT_DIR)
 
@@ -1495,13 +1493,12 @@ class PPOCRv6Pipeline:
                 self.sessions[tag] = session
                 self.bindings[tag] = session.io_binding()
                 self.io[tag] = (get_in_names(session), get_out_names(session))
-        if USE_ONNX_POSTPROCESS:
-            for tag, path in self._AUX_STAGES:
-                if os.path.exists(path):
-                    session = create_session(path, **packed_settings)
-                    self.sessions[tag] = session
-                    self.bindings[tag] = session.io_binding()
-                    self.io[tag] = (get_in_names(session), get_out_names(session))
+        for tag, path in self._AUX_STAGES:
+            if os.path.exists(path):
+                session = create_session(path, **packed_settings)
+                self.sessions[tag] = session
+                self.bindings[tag] = session.io_binding()
+                self.io[tag] = (get_in_names(session), get_out_names(session))
         if 'det' in self.sessions:
             print(f'Usable Providers: {self.sessions["det"].get_providers()}')
 
@@ -1542,7 +1539,7 @@ class PPOCRv6Pipeline:
 
     def _aux_ready(self):
         required = {'db_post', 'rec'}
-        return USE_ONNX_POSTPROCESS and required.issubset(self.sessions)
+        return required.issubset(self.sessions)
 
     def unwarp(self, image_ort):
         return self._infer_ort('unwarp', image_ort)[0]
@@ -1589,8 +1586,8 @@ class PPOCRv6Pipeline:
     def predict(self, image_nchw):
         if not self._aux_ready():
             raise RuntimeError(
-                'ONNX postprocess stages are unavailable; re-run export with '
-                'USE_ONNX_POSTPROCESS=True (missing db_post / rec).')
+                'ONNX postprocess stages are unavailable; re-run export to build '
+                'the db_post / rec stages.')
 
         original_shape = image_nchw.shape[2:]
         image_ort = self._to_ort(np.ascontiguousarray(image_nchw))
