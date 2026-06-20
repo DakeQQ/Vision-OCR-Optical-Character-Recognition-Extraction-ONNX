@@ -14,6 +14,7 @@ EXPORT_DIR = os.path.join(SCRIPT_DIR, 'PPOCRv6_ONNX')
 
 # --- Local model directories (this workspace layout) -----------------------------
 # Recognition is the SEPARATE top-level workspace folder, not under PPOCR/v6/models.
+# PPOCR URL: https://www.paddleocr.ai/main/version3.x/pipeline_usage/OCR.html
 _WS_ROOT            = os.path.normpath(os.path.join(SCRIPT_DIR, '..', '..', '..', '..'))
 MODELS_DIR          = os.path.join(SCRIPT_DIR, 'models')
 DOC_ORI_MODEL_DIR   = os.path.join(MODELS_DIR, 'PP-LCNet_x1_0_doc_ori_safetensors')
