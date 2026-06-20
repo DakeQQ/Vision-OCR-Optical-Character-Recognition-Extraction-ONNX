@@ -6,6 +6,7 @@
    - [FireRedOCR](https://modelscope.cn/models/FireRedTeam/FireRed-OCR)
    - [Surya-OCR-2](https://huggingface.co/datalab-to/surya-ocr-2)
    - [LFM2-Extract](https://huggingface.co/LiquidAI/LFM2-350M-Extract)
+   - [Falcon-Perception-300M](https://huggingface.co/tiiuae/Falcon-Perception-300M)
 
 
 ---
@@ -30,5 +31,4 @@
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
 - [ ] [NuExtract3](https://github.com/numindai/nuextract)
 - [ ] [Falcon-OCR](https://huggingface.co/tiiuae/Falcon-OCR)
-- [ ] [Falcon-Perception](https://huggingface.co/tiiuae/Falcon-Perception)
 ---
