@@ -31,4 +31,5 @@
 - [ ] [Qianfan-OCR](https://modelscope.cn/models/baidu-qianfan/Qianfan-OCR)
 - [ ] [NuExtract3](https://github.com/numindai/nuextract)
 - [ ] [Falcon-OCR](https://huggingface.co/tiiuae/Falcon-OCR)
+- [ ] [Unlimited-OCR](https://modelscope.cn/models/PaddlePaddle/Unlimited-OCR/summary)
 ---
